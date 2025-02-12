@@ -1,0 +1,54 @@
+buildscript {
+    ext.kotlin_version = '1.9.22'
+    repositories {
+        google()
+        mavenCentral()
+    }
+
+    dependencies {
+        classpath 'com.android.tools.build:gradle:7.3.0'
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+    }
+}
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+        maven {
+            url 'https://storage.googleapis.com/download.tensorflow.org/tflite/snapshots/nightly/latest'
+        }
+    }
+
+    afterEvaluate { project ->
+        if (project.hasProperty('android')) {
+            android {
+                def manifestFile = project.file('src/main/AndroidManifest.xml')
+                if (manifestFile.exists()) {
+                    def manifestText = manifestFile.text
+                    def packageMatch = manifestText =~ /package="([^"]+)"/
+                    def namespace = packageMatch.find() ? packageMatch.group(1) : "com.example.${project.name}"
+                    project.android.namespace = namespace
+                } else {
+                    project.android.namespace = "com.example.${project.name}"
+                }
+            }
+        }
+    }
+
+    gradle.projectsEvaluated {
+        tasks.withType(JavaCompile) {
+            options.compilerArgs << "-Xlint:deprecation"
+        }
+    }
+}
+
+rootProject.buildDir = '../build'
+subprojects {
+    project.buildDir = "${rootProject.buildDir}/${project.name}"
+    project.evaluationDependsOn(':app')
+}
+
+tasks.register("clean", Delete) {
+    delete rootProject.buildDir
+}
