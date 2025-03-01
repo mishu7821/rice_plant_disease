@@ -16,6 +16,27 @@ class HistoryScreen extends StatefulWidget {
 class _HistoryScreenState extends State<HistoryScreen> {
   final Set<int> _selectedItems = {};
   bool _isSelectionMode = false;
+  final ScrollController _scrollController = ScrollController();
+  List<ClassificationRecord> _records = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadRecords();
+  }
+
+  Future<void> _loadRecords() async {
+    final provider =
+        Provider.of<DiseaseClassifierProvider>(context, listen: false);
+    _records = await provider.getHistory();
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
 
   void _toggleSelection(int id) {
     setState(() {
@@ -29,6 +50,112 @@ class _HistoryScreenState extends State<HistoryScreen> {
         _isSelectionMode = true;
       }
     });
+  }
+
+  Future<void> _deleteSelected() async {
+    try {
+      final provider =
+          Provider.of<DiseaseClassifierProvider>(context, listen: false);
+      await provider.deleteRecords(_selectedItems.toList());
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Selected items deleted successfully'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+
+      // Reload records after deletion
+      await _loadRecords();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error deleting items: $e'),
+            backgroundColor: Theme.of(context).colorScheme.error,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _selectedItems.clear();
+          _isSelectionMode = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(_isSelectionMode
+            ? '${_selectedItems.length} selected'
+            : 'Classification History'),
+        actions: [
+          if (_isSelectionMode) ...[
+            IconButton(
+              icon: const Icon(Icons.delete),
+              onPressed: _selectedItems.isEmpty ? null : _deleteSelected,
+            ),
+            IconButton(
+              icon: const Icon(Icons.close),
+              onPressed: () {
+                setState(() {
+                  _selectedItems.clear();
+                  _isSelectionMode = false;
+                });
+              },
+            ),
+          ],
+        ],
+      ),
+      body: _buildHistoryList(),
+    );
+  }
+
+  Widget _buildHistoryList() {
+    if (_records.isEmpty) {
+      return const Center(
+        child: Text('No classification history yet'),
+      );
+    }
+
+    return ListView.builder(
+      key: const PageStorageKey('history_list'),
+      controller: _scrollController,
+      itemCount: _records.length,
+      itemBuilder: (context, index) {
+        final record = _records[index];
+        final isSelected = _selectedItems.contains(record.id);
+        final diseaseInfo = DiseaseInfoService.getInfo(record.prediction);
+
+        if (diseaseInfo == null) return const SizedBox.shrink();
+
+        return HistoryListItem(
+          key: ValueKey(record.id),
+          record: record,
+          diseaseInfo: diseaseInfo,
+          isSelected: isSelected,
+          isSelectionMode: _isSelectionMode,
+          onTap: () {
+            if (_isSelectionMode) {
+              _toggleSelection(record.id!);
+            } else {
+              _showDiseaseDetails(diseaseInfo, record.confidence);
+            }
+          },
+          onLongPress: () {
+            if (!_isSelectionMode) {
+              _toggleSelection(record.id!);
+            }
+          },
+        );
+      },
+    );
   }
 
   void _showDiseaseDetails(DiseaseInfo diseaseInfo, double confidence) {
@@ -101,151 +228,84 @@ class _HistoryScreenState extends State<HistoryScreen> {
       ),
     );
   }
+}
 
-  Future<void> _deleteSelected() async {
-    final provider =
-        Provider.of<DiseaseClassifierProvider>(context, listen: false);
-    await provider.deleteRecords(_selectedItems.toList());
-    setState(() {
-      _selectedItems.clear();
-      _isSelectionMode = false;
-    });
-  }
+class HistoryListItem extends StatelessWidget {
+  final ClassificationRecord record;
+  final DiseaseInfo diseaseInfo;
+  final bool isSelected;
+  final bool isSelectionMode;
+  final VoidCallback onTap;
+  final VoidCallback onLongPress;
+
+  const HistoryListItem({
+    super.key,
+    required this.record,
+    required this.diseaseInfo,
+    required this.isSelected,
+    required this.isSelectionMode,
+    required this.onTap,
+    required this.onLongPress,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(_isSelectionMode
-            ? '${_selectedItems.length} selected'
-            : 'Classification History'),
-        actions: [
-          if (_isSelectionMode) ...[
-            IconButton(
-              icon: const Icon(Icons.delete),
-              onPressed: _deleteSelected,
-            ),
-            IconButton(
-              icon: const Icon(Icons.close),
-              onPressed: () {
-                setState(() {
-                  _selectedItems.clear();
-                  _isSelectionMode = false;
-                });
-              },
-            ),
-          ],
-        ],
+    return Card(
+      margin: const EdgeInsets.symmetric(
+        horizontal: 16,
+        vertical: 8,
       ),
-      body: Consumer<DiseaseClassifierProvider>(
-        builder: (context, provider, child) {
-          return FutureBuilder<List<ClassificationRecord>>(
-            future: provider.getHistory(),
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) {
-                return const Center(child: CircularProgressIndicator());
-              }
-
-              if (snapshot.hasError) {
-                return Center(
-                  child: Text('Error: ${snapshot.error}'),
-                );
-              }
-
-              final records = snapshot.data ?? [];
-              if (records.isEmpty) {
-                return const Center(
-                  child: Text('No classification history yet'),
-                );
-              }
-
-              return ListView.builder(
-                itemCount: records.length,
-                itemBuilder: (context, index) {
-                  final record = records[index];
-                  final isSelected = _selectedItems.contains(record.id);
-                  final diseaseInfo =
-                      DiseaseInfoService.getInfo(record.prediction);
-
-                  if (diseaseInfo == null) return const SizedBox.shrink();
-
-                  return Card(
-                    margin: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 8,
-                    ),
-                    child: InkWell(
-                      onTap: _isSelectionMode
-                          ? () => _toggleSelection(record.id!)
-                          : () => _showDiseaseDetails(
-                              diseaseInfo, record.confidence),
-                      onLongPress: () {
-                        if (!_isSelectionMode) {
-                          _toggleSelection(record.id!);
-                        }
-                      },
-                      child: Container(
-                        color: isSelected
-                            ? Theme.of(context).colorScheme.primaryContainer
-                            : null,
-                        child: Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: Row(
-                            children: [
-                              SizedBox(
-                                width: 80,
-                                height: 80,
-                                child: ProcessedImageView(
-                                  imagePath: record.imagePath,
-                                  width: 80,
-                                  height: 80,
-                                ),
-                              ),
-                              const SizedBox(width: 16),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      diseaseInfo.name,
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .titleMedium,
-                                    ),
-                                    const SizedBox(height: 4),
-                                    Text(
-                                      'Confidence: ${(record.confidence * 100).toStringAsFixed(1)}%',
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .bodyMedium,
-                                    ),
-                                    const SizedBox(height: 4),
-                                    Text(
-                                      DateFormat('MMM d, y HH:mm')
-                                          .format(record.timestamp),
-                                      style:
-                                          Theme.of(context).textTheme.bodySmall,
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              if (_isSelectionMode)
-                                Checkbox(
-                                  value: isSelected,
-                                  onChanged: (value) =>
-                                      _toggleSelection(record.id!),
-                                ),
-                            ],
-                          ),
-                        ),
+      child: InkWell(
+        onTap: onTap,
+        onLongPress: onLongPress,
+        child: Container(
+          color: isSelected
+              ? Theme.of(context).colorScheme.primaryContainer
+              : null,
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 80,
+                  height: 80,
+                  child: ProcessedImageView(
+                    imagePath: record.imagePath,
+                    width: 80,
+                    height: 80,
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        diseaseInfo.name,
+                        style: Theme.of(context).textTheme.titleMedium,
                       ),
-                    ),
-                  );
-                },
-              );
-            },
-          );
-        },
+                      const SizedBox(height: 4),
+                      Text(
+                        'Confidence: ${(record.confidence * 100).toStringAsFixed(1)}%',
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        DateFormat('MMM d, y HH:mm').format(record.timestamp),
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+                if (isSelectionMode)
+                  Checkbox(
+                    value: isSelected,
+                    onChanged: (_) => onTap(),
+                  ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

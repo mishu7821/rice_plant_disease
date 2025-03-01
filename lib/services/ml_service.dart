@@ -4,7 +4,6 @@ import 'dart:math' as math;
 import 'package:tflite_flutter/tflite_flutter.dart';
 import 'package:image/image.dart' as img;
 import 'package:logger/logger.dart';
-import 'package:rice_disease_classifier/services/disease_info_service.dart';
 
 /// Service to handle ML model operations including initialization and image classification
 class MLService {
@@ -15,23 +14,9 @@ class MLService {
   late final List<String> _labels;
   bool _isInitialized = false;
 
-  // Normalization parameters
-  static const double _inputMean = 127.5;
-  static const double _inputStd = 128.0;
-
-  // Class weights to balance predictions
-  final Map<String, double> _classWeights = {
-    'bacterial_leaf_blight': 1.2,
-    'bacterial_leaf_streak': 1.2,
-    'bacterial_panicle_blight': 1.2,
-    'blast': 1.2,
-    'brown_spot': 1.2,
-    'dead_heart': 1.2,
-    'downy_mildew': 1.2,
-    'hispa': 0.6,
-    'normal': 1.4,
-    'tungro': 1.2,
-  };
+  // Normalization parameters for [-1, 1] range
+  static const double _inputMean = 0.0;
+  static const double _inputStd = 255.0;
 
   // Define the fixed order of labels that matches the model's output
   static const List<String> _modelLabels = [
@@ -47,31 +32,44 @@ class MLService {
     'tungro',
   ];
 
-  // Prediction smoothing parameters
-  static const int _smoothingWindowSize = 3;
-  final List<List<double>> _recentPredictions = [];
-
   Future<void> initialize() async {
     if (_isInitialized) return;
 
     try {
-      // Load model with optimized settings
-      final options = InterpreterOptions()..threads = 2;
+      // Initialize with optimized settings
+      final options = InterpreterOptions()
+        ..threads = 4 // Use multiple threads for CPU operations
+        ..useNnApiForAndroid = true; // Enable Android Neural Networks API
+
+      try {
+        // Try to use GPU acceleration
+        final gpuDelegate = GpuDelegate();
+        options.addDelegate(gpuDelegate);
+        _logger.i('GPU delegate enabled for faster inference');
+      } catch (e) {
+        _logger.w('GPU acceleration not available, using CPU: $e');
+        // Keep NNAPI enabled as fallback
+      }
       _interpreter = await Interpreter.fromAsset(modelPath, options: options);
 
-      // Get input and output shapes for verification
-      final inputShape = _interpreter.getInputTensor(0).shape;
-      final outputShape = _interpreter.getOutputTensor(0).shape;
-      _logger.i(
-          'Model loaded - Input shape: $inputShape, Output shape: $outputShape');
+      final inputTensor = _interpreter.getInputTensor(0);
+      final outputTensor = _interpreter.getOutputTensor(0);
 
-      // Verify output shape matches our label count
-      if (outputShape[1] != _modelLabels.length) {
+      _logger.i('Model loaded:');
+      _logger.i('Input shape: ${inputTensor.shape}');
+      _logger.i('Input type: ${inputTensor.type}');
+      _logger.i('Output shape: ${outputTensor.shape}');
+      _logger.i('Output type: ${outputTensor.type}');
+
+      if (outputTensor.shape[1] != _modelLabels.length) {
         throw Exception(
-            'Model output shape ${outputShape[1]} does not match label count ${_modelLabels.length}');
+            'Model output shape ${outputTensor.shape[1]} does not match label count ${_modelLabels.length}');
       }
 
-      // Use the fixed order labels
+      // Log tensor information
+      _logger.i('Input tensor type: ${inputTensor.type}');
+      _logger.i('Using normalization range: [-1, 1]');
+
       _labels = _modelLabels;
       _logger.i('Using ${_labels.length} labels in fixed order: $_labels');
 
@@ -88,10 +86,14 @@ class MLService {
     }
 
     try {
-      _logger.i('Processing image: $imagePath');
+      _logger.i('Starting new classification for image: $imagePath');
 
-      // Load and decode image
+      // Verify image exists
       final imageFile = File(imagePath);
+      if (!await imageFile.exists()) {
+        throw Exception('Image file does not exist: $imagePath');
+      }
+
       final imageBytes = await imageFile.readAsBytes();
       final image = img.decodeImage(imageBytes);
 
@@ -99,102 +101,119 @@ class MLService {
 
       _logger.i('Original image size: ${image.width}x${image.height}');
 
-      // Resize and preprocess image
-      final resizedImage = img.copyResize(
+      // Enhanced image preprocessing with better quality
+      var processedImage = img.copyResize(
         image,
         width: 224,
         height: 224,
-        interpolation: img.Interpolation.linear,
+        interpolation: img
+            .Interpolation.cubic, // Use cubic interpolation for better quality
       );
 
-      // Convert to float32 values with adjusted normalization
+      // Apply moderate image enhancement
+      processedImage = img.adjustColor(
+        processedImage,
+        contrast: 1.2, // Moderate contrast increase
+        brightness: 1.0, // Keep original brightness
+        saturation: 1.1, // Slight saturation boost
+      );
+
+      // Convert to float array and normalize to [-1, 1]
       final inputBuffer = Float32List(1 * 224 * 224 * 3);
       var index = 0;
-
       for (var y = 0; y < 224; y++) {
         for (var x = 0; x < 224; x++) {
-          final pixel = resizedImage.getPixel(x, y);
-          // Normalize RGB values using mean and std
-          inputBuffer[index++] = (pixel.r - _inputMean) / _inputStd;
-          inputBuffer[index++] = (pixel.g - _inputMean) / _inputStd;
-          inputBuffer[index++] = (pixel.b - _inputMean) / _inputStd;
+          final pixel = processedImage.getPixel(x, y);
+          // Simple normalization to [-1, 1] range
+          inputBuffer[index++] = (pixel.r / _inputStd) * 2 - 1;
+          inputBuffer[index++] = (pixel.g / _inputStd) * 2 - 1;
+          inputBuffer[index++] = (pixel.b / _inputStd) * 2 - 1;
         }
       }
 
-      // Prepare output buffer
+      // Run inference with raw output
       final outputBuffer = Float32List(_labels.length);
-
-      // Run inference
       _interpreter.run(inputBuffer.buffer, outputBuffer.buffer);
 
-      // Process results with improved confidence threshold
-      final results = outputBuffer.toList();
-      _logger.i('Raw prediction scores: $results');
-
-      // Apply class weights
-      final weightedResults = List<double>.from(results);
-      for (var i = 0; i < weightedResults.length; i++) {
-        final label = _labels[i];
-        final weight = _classWeights[label] ?? 1.0;
-        weightedResults[i] *= weight;
-      }
-
-      // Add to recent predictions for smoothing
-      _recentPredictions.add(weightedResults);
-      if (_recentPredictions.length > _smoothingWindowSize) {
-        _recentPredictions.removeAt(0);
-      }
-
-      // Apply smoothing by averaging recent predictions
-      final smoothedResults = List<double>.filled(weightedResults.length, 0.0);
-      for (var i = 0; i < weightedResults.length; i++) {
-        var sum = 0.0;
-        for (final prediction in _recentPredictions) {
-          sum += prediction[i];
-        }
-        smoothedResults[i] = sum / _recentPredictions.length;
-      }
+      final rawPredictions = outputBuffer.toList();
 
       // Apply softmax to get probabilities
-      final probabilities = _applySoftmax(smoothedResults);
+      final probabilities = _applySoftmax(rawPredictions);
 
-      // Find prediction with highest confidence
-      var maxScore = double.negativeInfinity;
-      var predictionIndex = 0;
+      // Log all predictions with their probabilities
+      for (var i = 0; i < _labels.length; i++) {
+        _logger.i(
+            '${_labels[i]}: ${(probabilities[i] * 100).toStringAsFixed(2)}%');
+      }
 
-      _logger.i('Analyzing predictions:');
-      for (var i = 0; i < probabilities.length; i++) {
-        final score = probabilities[i];
-        final label = _labels[i];
-        final info = DiseaseInfoService.getInfo(label);
-        final percentage = (score * 100).toStringAsFixed(2);
-        _logger.i('${info?.name ?? label}: $percentage%');
+      // Sort predictions by confidence
+      final predictions = List<MapEntry<String, double>>.generate(
+        _labels.length,
+        (i) => MapEntry(_labels[i], probabilities[i]),
+      )..sort((a, b) => b.value.compareTo(a.value));
 
-        if (score > maxScore) {
-          maxScore = score;
-          predictionIndex = i;
+      // Log all predictions sorted by confidence
+      _logger.i('Sorted predictions:');
+      for (var pred in predictions) {
+        _logger.i('${pred.key}: ${(pred.value * 100).toStringAsFixed(2)}%');
+      }
+
+      // Get top prediction
+      final topPrediction = predictions.first;
+
+      // Define confidence thresholds
+      const highConfidenceThreshold = 0.85; // 85%
+      const minConfidenceThreshold = 0.35; // 35%
+      const marginThreshold = 0.25; // 25% margin for clear winner
+
+      // Check if it's a "normal" prediction
+      if (topPrediction.key == 'normal') {
+        // Require very high confidence for normal prediction
+        if (topPrediction.value > highConfidenceThreshold) {
+          _logger.i(
+              'High confidence normal prediction: ${(topPrediction.value * 100).toStringAsFixed(2)}%');
+          return (topPrediction.key, topPrediction.value);
+        } else {
+          // If normal but not high confidence, check second prediction
+          final secondPrediction = predictions[1];
+          if (secondPrediction.value > minConfidenceThreshold) {
+            _logger.i(
+                'Defaulting to second prediction due to low confidence normal: ${secondPrediction.key}');
+            return (secondPrediction.key, secondPrediction.value);
+          }
         }
       }
 
-      // Only return prediction if confidence is above threshold
-      const minConfidence = 0.5; // Increase minimum confidence threshold to 50%
-      if (maxScore < minConfidence) {
+      // For disease predictions
+      if (topPrediction.value < minConfidenceThreshold) {
         _logger.w(
-            'Low confidence prediction (${(maxScore * 100).toStringAsFixed(2)}%), defaulting to normal');
-        return ('normal', maxScore);
+            'Low confidence prediction: ${(topPrediction.value * 100).toStringAsFixed(2)}%');
+        return ('uncertain', topPrediction.value);
       }
 
-      final prediction = _labels[predictionIndex];
+      // Check if there's a clear winner among disease predictions
+      if (predictions[1].value > minConfidenceThreshold &&
+          (topPrediction.value - predictions[1].value) < marginThreshold) {
+        _logger.w(
+            'Ambiguous prediction between ${topPrediction.key} (${(topPrediction.value * 100).toStringAsFixed(2)}%) and ${predictions[1].key} (${(predictions[1].value * 100).toStringAsFixed(2)}%)');
+        // Return the disease prediction if it's competing with 'normal'
+        if (predictions[1].key == 'normal' || topPrediction.key == 'normal') {
+          final diseasePrediction =
+              predictions[1].key == 'normal' ? topPrediction : predictions[1];
+          return (diseasePrediction.key, diseasePrediction.value);
+        }
+        return ('uncertain', topPrediction.value);
+      }
+
       _logger.i(
-          'Final prediction: $prediction (${(maxScore * 100).toStringAsFixed(2)}%)');
-      return (prediction, maxScore);
+          'Final prediction: ${topPrediction.key} with confidence: ${(topPrediction.value * 100).toStringAsFixed(2)}%');
+      return (topPrediction.key, topPrediction.value);
     } catch (e) {
       _logger.e('Error classifying image', error: e);
       throw Exception('Error classifying image: $e');
     }
   }
 
-  // Apply softmax to convert logits to probabilities
   List<double> _applySoftmax(List<double> logits) {
     final maxLogit = logits.reduce((a, b) => a > b ? a : b);
     final expValues = logits.map((x) => _exp(x - maxLogit)).toList();
@@ -202,7 +221,6 @@ class MLService {
     return expValues.map((x) => x / sumExp).toList();
   }
 
-  // Safe exponential function
   double _exp(double x) {
     if (x > 88.0) return double.maxFinite;
     if (x < -88.0) return 0.0;
@@ -211,8 +229,14 @@ class MLService {
 
   void dispose() {
     if (_isInitialized) {
-      _interpreter.close();
-      _isInitialized = false;
+      try {
+        _interpreter.close();
+        _logger.i('TFLite interpreter disposed successfully');
+      } catch (e) {
+        _logger.e('Error disposing TFLite interpreter: $e');
+      } finally {
+        _isInitialized = false;
+      }
     }
   }
 }

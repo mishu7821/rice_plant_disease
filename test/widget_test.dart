@@ -7,10 +7,10 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:provider/provider.dart';
 import 'package:rice_disease_classifier/main.dart';
 import 'package:rice_disease_classifier/providers/disease_classifier_provider.dart';
 import 'package:rice_disease_classifier/screens/home_screen.dart';
+import 'package:provider/provider.dart';
 
 void main() {
   testWidgets('App should start with splash screen',

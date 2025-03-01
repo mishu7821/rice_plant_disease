@@ -4,6 +4,7 @@ import 'package:rice_disease_classifier/services/database_helper.dart';
 import 'package:rice_disease_classifier/services/disease_info_service.dart';
 import 'package:rice_disease_classifier/services/image_processing_service.dart';
 import 'package:rice_disease_classifier/services/ml_service.dart';
+import 'dart:io';
 
 class DiseaseClassifierProvider with ChangeNotifier {
   final ImageProcessingService _imageProcessingService =
@@ -47,30 +48,47 @@ class DiseaseClassifierProvider with ChangeNotifier {
 
   Future<void> classifyImage(String imagePath) async {
     try {
+      // Reset state for new classification
       _isProcessing = true;
       _result = null;
       _confidence = null;
       _currentDiseaseInfo = null;
+      _processedImagePath = null;
       notifyListeners();
 
       if (!_isInitialized) {
         await initialize();
       }
 
+      // Process the image
       _processedImagePath =
           await _imageProcessingService.preprocessImage(imagePath);
+
+      // Ensure the processed image exists
+      if (_processedImagePath == null ||
+          !await File(_processedImagePath!).exists()) {
+        throw Exception('Failed to process image');
+      }
+
+      // Perform classification
       final (prediction, confidence) =
           await _mlService.classifyImage(_processedImagePath!);
 
+      // Update state with results
       _result = prediction;
       _confidence = confidence;
       _currentDiseaseInfo = DiseaseInfoService.getInfo(prediction);
 
-      await _databaseHelper.insertClassification(
-        imagePath: _processedImagePath!,
-        disease: prediction,
-        confidence: confidence,
-      );
+      // Save to history (including uncertain predictions)
+      if (_processedImagePath != null) {
+        await _databaseHelper.insertClassification(
+          imagePath: _processedImagePath!,
+          disease: prediction,
+          confidence: confidence,
+        );
+      }
+
+      // Reload history
       await loadHistory();
 
       _isProcessing = false;
@@ -84,14 +102,24 @@ class DiseaseClassifierProvider with ChangeNotifier {
   }
 
   Future<List<ClassificationRecord>> getHistory() async {
-    return await _databaseHelper.getRecords();
+    return _history;
   }
 
   Future<void> deleteRecords(List<int> ids) async {
-    for (final id in ids) {
-      await _databaseHelper.deleteRecord(id);
+    try {
+      // Delete records from database
+      for (final id in ids) {
+        await _databaseHelper.deleteRecord(id);
+      }
+
+      // Update the local history by removing deleted records
+      _history.removeWhere((record) => ids.contains(record.id));
+
+      // Notify listeners of the change
+      notifyListeners();
+    } catch (e) {
+      throw Exception('Failed to delete records: $e');
     }
-    notifyListeners();
   }
 
   @override

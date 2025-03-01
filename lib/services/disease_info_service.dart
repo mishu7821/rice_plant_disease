@@ -16,6 +16,13 @@ class DiseaseInfo {
 
 class DiseaseInfoService {
   static final Map<String, DiseaseInfo> _diseaseInfo = {
+    'uncertain': const DiseaseInfo(
+      name: 'Uncertain Prediction',
+      description: 'The system could not make a confident prediction for this image.',
+      symptoms: 'Unable to determine symptoms with sufficient confidence.\n\nThis could be due to:\n• Image quality issues\n• Lighting conditions\n• Unclear disease patterns\n• Multiple overlapping symptoms',
+      treatment: 'Recommendations:\n• Take another photo with better lighting\n• Ensure the affected area is clearly visible\n• Try different angles\n• Consult with a local agricultural expert',
+      prevention: '• Regular monitoring of plant health\n• Maintain proper documentation\n• Consider multiple diagnostic methods\n• Seek expert consultation when uncertain',
+    ),
     'bacterial_leaf_blight': const DiseaseInfo(
       name: 'Bacterial Leaf Blight',
       description:
