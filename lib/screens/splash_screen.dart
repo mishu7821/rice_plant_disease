@@ -22,7 +22,7 @@ class _SplashScreenState extends State<SplashScreen> {
     try {
       // Add a minimum delay to ensure splash screen is visible
       await Future.delayed(const Duration(seconds: 2));
-      
+
       final provider = context.read<DiseaseClassifierProvider>();
       await provider.initialize();
       if (mounted) {
