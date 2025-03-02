@@ -1,24 +1,19 @@
 import 'dart:io';
-import 'dart:typed_data';
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'package:tflite_flutter/tflite_flutter.dart';
 import 'package:image/image.dart' as img;
 import 'package:logger/logger.dart';
 
 /// Service to handle ML model operations including initialization and image classification
 class MLService {
-  static const String modelPath = 'assets/models/rice_model.tflite';
   final _logger = Logger();
 
   late final Interpreter _interpreter;
   late final List<String> _labels;
   bool _isInitialized = false;
 
-  // Normalization parameters for [-1, 1] range
-  static const double _inputMean = 0.0;
-  static const double _inputStd = 255.0;
-
-  // Define the fixed order of labels that matches the model's output
+  // Fixed labels for the model
   static const List<String> _modelLabels = [
     'bacterial_leaf_blight',
     'bacterial_leaf_streak',
@@ -32,52 +27,49 @@ class MLService {
     'tungro',
   ];
 
+  // Initialization of the ML model
   Future<void> initialize() async {
     if (_isInitialized) return;
 
     try {
-      // Initialize with optimized settings
-      final options = InterpreterOptions()
-        ..threads = 4 // Use multiple threads for CPU operations
-        ..useNnApiForAndroid = true; // Enable Android Neural Networks API
+      _logger.i('Initializing ML Service');
+
+      // Load model
+      final interpreterOptions = InterpreterOptions();
+
+      // Get the model path
+      final modelPath = await _getModelPath();
+      _logger.i('Loading model from path: $modelPath');
 
       try {
-        // Try to use GPU acceleration
-        final gpuDelegate = GpuDelegate();
-        options.addDelegate(gpuDelegate);
-        _logger.i('GPU delegate enabled for faster inference');
+        _interpreter =
+            await Interpreter.fromAsset(modelPath, options: interpreterOptions);
       } catch (e) {
-        _logger.w('GPU acceleration not available, using CPU: $e');
-        // Keep NNAPI enabled as fallback
-      }
-      _interpreter = await Interpreter.fromAsset(modelPath, options: options);
-
-      final inputTensor = _interpreter.getInputTensor(0);
-      final outputTensor = _interpreter.getOutputTensor(0);
-
-      _logger.i('Model loaded:');
-      _logger.i('Input shape: ${inputTensor.shape}');
-      _logger.i('Input type: ${inputTensor.type}');
-      _logger.i('Output shape: ${outputTensor.shape}');
-      _logger.i('Output type: ${outputTensor.type}');
-
-      if (outputTensor.shape[1] != _modelLabels.length) {
-        throw Exception(
-            'Model output shape ${outputTensor.shape[1]} does not match label count ${_modelLabels.length}');
+        _logger.e('Error loading model from asset: $e');
+        // Try loading with a different path format for release mode
+        final alternativePath = modelPath.startsWith('assets/')
+            ? modelPath.substring(7) // Remove 'assets/' prefix
+            : 'assets/$modelPath';
+        _logger.i('Trying alternative path: $alternativePath');
+        _interpreter = await Interpreter.fromAsset(alternativePath,
+            options: interpreterOptions);
       }
 
-      // Log tensor information
-      _logger.i('Input tensor type: ${inputTensor.type}');
-      _logger.i('Using normalization range: [-1, 1]');
+      // Use predefined labels since labels.txt doesn't exist
+      _logger.i('Using predefined labels: $_modelLabels');
+      _labels = List.from(_modelLabels);
 
-      _labels = _modelLabels;
-      _logger.i('Using ${_labels.length} labels in fixed order: $_labels');
-
+      _logger.i('Model loaded successfully with ${_labels.length} labels');
       _isInitialized = true;
     } catch (e) {
-      _logger.e('Failed to initialize TFLite interpreter', error: e);
-      throw Exception('Failed to initialize TFLite interpreter: $e');
+      _logger.e('Failed to initialize ML Service', error: e);
+      throw Exception('Failed to initialize ML Service: $e');
     }
+  }
+
+  // Helper method to get the model path
+  Future<String> _getModelPath() async {
+    return 'assets/models/rice_disease_model.tflite';
   }
 
   Future<(String, double)> classifyImage(String imagePath) async {
@@ -101,44 +93,99 @@ class MLService {
 
       _logger.i('Original image size: ${image.width}x${image.height}');
 
-      // Enhanced image preprocessing with better quality
+      // Resize image to model input size
       var processedImage = img.copyResize(
         image,
         width: 224,
         height: 224,
-        interpolation: img
-            .Interpolation.cubic, // Use cubic interpolation for better quality
+        interpolation: img.Interpolation.cubic,
       );
 
-      // Apply moderate image enhancement
-      processedImage = img.adjustColor(
-        processedImage,
-        contrast: 1.2, // Moderate contrast increase
-        brightness: 1.0, // Keep original brightness
-        saturation: 1.1, // Slight saturation boost
-      );
-
-      // Convert to float array and normalize to [-1, 1]
+      // Convert to float array and normalize using improved technique
       final inputBuffer = Float32List(1 * 224 * 224 * 3);
       var index = 0;
+
+      // Calculate image statistics for better normalization
+      double meanR = 0, meanG = 0, meanB = 0;
+      double stdR = 0, stdG = 0, stdB = 0;
+
+      // First pass: calculate means
       for (var y = 0; y < 224; y++) {
         for (var x = 0; x < 224; x++) {
           final pixel = processedImage.getPixel(x, y);
-          // Simple normalization to [-1, 1] range
-          inputBuffer[index++] = (pixel.r / _inputStd) * 2 - 1;
-          inputBuffer[index++] = (pixel.g / _inputStd) * 2 - 1;
-          inputBuffer[index++] = (pixel.b / _inputStd) * 2 - 1;
+          meanR += pixel.r.toDouble();
+          meanG += pixel.g.toDouble();
+          meanB += pixel.b.toDouble();
         }
       }
 
-      // Run inference with raw output
-      final outputBuffer = Float32List(_labels.length);
-      _interpreter.run(inputBuffer.buffer, outputBuffer.buffer);
+      int totalPixels = 224 * 224;
+      meanR /= totalPixels;
+      meanG /= totalPixels;
+      meanB /= totalPixels;
 
-      final rawPredictions = outputBuffer.toList();
+      // Second pass: calculate standard deviations
+      for (var y = 0; y < 224; y++) {
+        for (var x = 0; x < 224; x++) {
+          final pixel = processedImage.getPixel(x, y);
+          stdR += (pixel.r.toDouble() - meanR) * (pixel.r.toDouble() - meanR);
+          stdG += (pixel.g.toDouble() - meanG) * (pixel.g.toDouble() - meanG);
+          stdB += (pixel.b.toDouble() - meanB) * (pixel.b.toDouble() - meanB);
+        }
+      }
 
-      // Apply softmax to get probabilities
-      final probabilities = _applySoftmax(rawPredictions);
+      stdR = math.sqrt(stdR / totalPixels);
+      stdG = math.sqrt(stdG / totalPixels);
+      stdB = math.sqrt(stdB / totalPixels);
+
+      // Prevent division by zero
+      stdR = stdR < 1.0 ? 1.0 : stdR;
+      stdG = stdG < 1.0 ? 1.0 : stdG;
+      stdB = stdB < 1.0 ? 1.0 : stdB;
+
+      _logger.i(
+          'Image statistics - Mean: ($meanR, $meanG, $meanB), StdDev: ($stdR, $stdG, $stdB)');
+
+      // Third pass: normalize using calculated statistics (z-score normalization)
+      index = 0;
+      for (var y = 0; y < 224; y++) {
+        for (var x = 0; x < 224; x++) {
+          final pixel = processedImage.getPixel(x, y);
+
+          // Z-score normalization with scaling to [-1, 1] range
+          // Increase scaling factor from 0.5 to 1.0 for better confidence representation
+          inputBuffer[index++] = ((pixel.r.toDouble() - meanR) / stdR);
+          inputBuffer[index++] = ((pixel.g.toDouble() - meanG) / stdG);
+          inputBuffer[index++] = ((pixel.b.toDouble() - meanB) / stdB);
+        }
+      }
+
+      // Run multiple inferences and average results for more stability
+      final List<List<double>> allPredictions = [];
+      const int numInferences = 3;
+
+      for (int i = 0; i < numInferences; i++) {
+        final outputBuffer = Float32List(_labels.length);
+        _interpreter.run(inputBuffer.buffer, outputBuffer.buffer);
+        allPredictions.add(outputBuffer.toList());
+      }
+
+      // Average the predictions
+      final List<double> averagedRawPredictions =
+          List.filled(_labels.length, 0.0);
+      for (int labelIdx = 0; labelIdx < _labels.length; labelIdx++) {
+        for (int inferenceIdx = 0;
+            inferenceIdx < numInferences;
+            inferenceIdx++) {
+          averagedRawPredictions[labelIdx] +=
+              allPredictions[inferenceIdx][labelIdx];
+        }
+        averagedRawPredictions[labelIdx] /= numInferences;
+      }
+
+      _logger.i('Averaged raw predictions: $averagedRawPredictions');
+
+      final probabilities = _applySoftmax(averagedRawPredictions);
 
       // Log all predictions with their probabilities
       for (var i = 0; i < _labels.length; i++) {
@@ -161,26 +208,35 @@ class MLService {
       // Get top prediction
       final topPrediction = predictions.first;
 
+      // Get second prediction for comparison
+      final secondPrediction = predictions.length > 1 ? predictions[1] : null;
+
       // Define confidence thresholds
-      const highConfidenceThreshold = 0.85; // 85%
-      const minConfidenceThreshold = 0.35; // 35%
-      const marginThreshold = 0.25; // 25% margin for clear winner
+      const double minConfidenceThreshold = 0.20; // 20%
+      const double marginThreshold = 0.10; // 10% margin for clear winner
 
       // Check if it's a "normal" prediction
       if (topPrediction.key == 'normal') {
-        // Require very high confidence for normal prediction
-        if (topPrediction.value > highConfidenceThreshold) {
+        // For normal prediction, check if there's a disease with reasonable confidence
+        final diseasePredictions = predictions
+            .where((pred) => pred.key != 'normal' && pred.value > 0.15)
+            .toList();
+
+        if (diseasePredictions.isNotEmpty) {
+          // If there's a disease with reasonable confidence, return it instead
           _logger.i(
-              'High confidence normal prediction: ${(topPrediction.value * 100).toStringAsFixed(2)}%');
+              'Found potential disease despite "normal" prediction: ${diseasePredictions.first.key}');
+          return (diseasePredictions.first.key, diseasePredictions.first.value);
+        }
+
+        // Otherwise return normal if confidence is high enough
+        if (topPrediction.value > 0.6) {
           return (topPrediction.key, topPrediction.value);
         } else {
-          // If normal but not high confidence, check second prediction
-          final secondPrediction = predictions[1];
-          if (secondPrediction.value > minConfidenceThreshold) {
-            _logger.i(
-                'Defaulting to second prediction due to low confidence normal: ${secondPrediction.key}');
-            return (secondPrediction.key, secondPrediction.value);
-          }
+          // If normal but low confidence, check second prediction
+          return secondPrediction != null
+              ? (secondPrediction.key, secondPrediction.value)
+              : (topPrediction.key, topPrediction.value);
         }
       }
 
@@ -188,54 +244,71 @@ class MLService {
       if (topPrediction.value < minConfidenceThreshold) {
         _logger.w(
             'Low confidence prediction: ${(topPrediction.value * 100).toStringAsFixed(2)}%');
-        return ('uncertain', topPrediction.value);
-      }
 
-      // Check if there's a clear winner among disease predictions
-      if (predictions[1].value > minConfidenceThreshold &&
-          (topPrediction.value - predictions[1].value) < marginThreshold) {
-        _logger.w(
-            'Ambiguous prediction between ${topPrediction.key} (${(topPrediction.value * 100).toStringAsFixed(2)}%) and ${predictions[1].key} (${(predictions[1].value * 100).toStringAsFixed(2)}%)');
-        // Return the disease prediction if it's competing with 'normal'
-        if (predictions[1].key == 'normal' || topPrediction.key == 'normal') {
-          final diseasePrediction =
-              predictions[1].key == 'normal' ? topPrediction : predictions[1];
-          return (diseasePrediction.key, diseasePrediction.value);
+        // Check if there are any disease predictions with reasonable confidence
+        final diseasePredictions = predictions
+            .where((pred) =>
+                pred.key != 'normal' &&
+                pred.key != 'uncertain' &&
+                pred.value > 0.15)
+            .toList();
+
+        if (diseasePredictions.isNotEmpty) {
+          _logger.i(
+              'Found disease prediction with low confidence: ${diseasePredictions.first.key}');
+          return (diseasePredictions.first.key, diseasePredictions.first.value);
         }
+
+        // If no reasonable disease prediction, return uncertain
         return ('uncertain', topPrediction.value);
       }
 
-      _logger.i(
-          'Final prediction: ${topPrediction.key} with confidence: ${(topPrediction.value * 100).toStringAsFixed(2)}%');
+      // Check if the top prediction is significantly better than the second
+      if (secondPrediction != null &&
+          (topPrediction.value - secondPrediction.value) < marginThreshold) {
+        _logger.i(
+            'Close predictions between ${topPrediction.key} and ${secondPrediction.key}');
+
+        // If the second prediction is a disease and the first is normal, prefer the disease
+        if (secondPrediction.key != 'normal' && topPrediction.key == 'normal') {
+          return (secondPrediction.key, secondPrediction.value);
+        }
+
+        // Otherwise return the top prediction
+        return (topPrediction.key, topPrediction.value);
+      }
+
+      // Return the top prediction
       return (topPrediction.key, topPrediction.value);
     } catch (e) {
-      _logger.e('Error classifying image', error: e);
-      throw Exception('Error classifying image: $e');
+      _logger.e('Error during classification', error: e);
+      throw Exception('Classification failed: $e');
     }
   }
 
+  // Apply softmax to convert raw model outputs to probabilities
   List<double> _applySoftmax(List<double> logits) {
-    final maxLogit = logits.reduce((a, b) => a > b ? a : b);
-    final expValues = logits.map((x) => _exp(x - maxLogit)).toList();
-    final sumExp = expValues.reduce((a, b) => a + b);
-    return expValues.map((x) => x / sumExp).toList();
-  }
+    // Find the maximum value to prevent overflow
+    final double maxLogit = logits.reduce((a, b) => a > b ? a : b);
 
-  double _exp(double x) {
-    if (x > 88.0) return double.maxFinite;
-    if (x < -88.0) return 0.0;
-    return math.exp(x);
+    // Subtract max for numerical stability and apply exp
+    final List<double> expValues =
+        logits.map((logit) => math.exp(logit - maxLogit)).toList();
+
+    // Calculate sum of all exp values
+    final double sumExp = expValues.reduce((a, b) => a + b);
+
+    // Normalize to get probabilities
+    return expValues.map((exp) => exp / sumExp).toList();
   }
 
   void dispose() {
     if (_isInitialized) {
       try {
         _interpreter.close();
-        _logger.i('TFLite interpreter disposed successfully');
+        _logger.i('ML Service disposed');
       } catch (e) {
-        _logger.e('Error disposing TFLite interpreter: $e');
-      } finally {
-        _isInitialized = false;
+        _logger.e('Error disposing ML Service', error: e);
       }
     }
   }

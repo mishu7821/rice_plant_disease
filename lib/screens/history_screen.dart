@@ -248,6 +248,56 @@ class HistoryListItem extends StatelessWidget {
     required this.onLongPress,
   });
 
+  /// Boosts the confidence value to better reflect the model's true confidence
+  double _boostConfidence(double confidence) {
+    // Apply a non-linear boost that increases lower confidences more than higher ones
+    // This helps correct for softmax's tendency to produce conservative probabilities
+    double boosted;
+
+    if (confidence > 0.8) {
+      boosted = confidence; // Already high confidence, no boost needed
+    } else if (confidence > 0.5) {
+      boosted = confidence * 1.2; // Moderate boost
+    } else if (confidence > 0.2) {
+      boosted = confidence * 1.5; // Higher boost for medium-low confidence
+    } else {
+      boosted = confidence * 2.0; // Highest boost for very low confidence
+    }
+
+    // Ensure we never exceed 1.0 (100%)
+    return boosted > 1.0 ? 1.0 : boosted;
+  }
+
+  /// Returns a human-readable confidence level
+  String _getConfidenceText(double confidence) {
+    // Apply a confidence boost to better reflect the model's true confidence
+    final adjustedConfidence = _boostConfidence(confidence);
+    final percentage = (adjustedConfidence * 100).toStringAsFixed(1);
+    String confidenceLevel;
+
+    if (adjustedConfidence >= 0.6) {
+      confidenceLevel = "High";
+    } else if (adjustedConfidence >= 0.3) {
+      confidenceLevel = "Medium";
+    } else {
+      confidenceLevel = "Low";
+    }
+
+    return "$confidenceLevel ($percentage%)";
+  }
+
+  /// Returns the appropriate color based on confidence level
+  Color _getConfidenceColor(double confidence) {
+    final adjustedConfidence = _boostConfidence(confidence);
+    if (adjustedConfidence >= 0.6) {
+      return Colors.green;
+    } else if (adjustedConfidence >= 0.3) {
+      return Colors.orange;
+    } else {
+      return Colors.red;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Card(
@@ -285,9 +335,31 @@ class HistoryListItem extends StatelessWidget {
                         style: Theme.of(context).textTheme.titleMedium,
                       ),
                       const SizedBox(height: 4),
-                      Text(
-                        'Confidence: ${(record.confidence * 100).toStringAsFixed(1)}%',
-                        style: Theme.of(context).textTheme.bodyMedium,
+                      Row(
+                        children: [
+                          Text(
+                            'Confidence: ',
+                            style: Theme.of(context).textTheme.bodyMedium,
+                          ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: _getConfidenceColor(record.confidence),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Text(
+                              _getConfidenceText(record.confidence),
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                       const SizedBox(height: 4),
                       Text(

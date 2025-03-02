@@ -77,6 +77,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     DiseaseCard(
                       disease: provider.result!,
                       confidence: provider.confidence!,
+                      diseaseInfo: provider.currentDiseaseInfo,
                     )
                   else
                     Card(
@@ -102,6 +103,8 @@ class _HomeScreenState extends State<HomeScreen> {
                   const SizedBox(height: 24),
                   CameraButton(
                     onPressed: () async {
+                      if (!mounted) return;
+
                       final provider = Provider.of<DiseaseClassifierProvider>(
                           context,
                           listen: false);
@@ -115,8 +118,10 @@ class _HomeScreenState extends State<HomeScreen> {
                         }
                       } catch (e) {
                         if (!mounted) return;
-                        ErrorHandler.showError(
-                            context, ErrorHandler.getErrorMessage(e));
+                        if (context.mounted) {
+                          ErrorHandler.showError(
+                              context, ErrorHandler.getErrorMessage(e));
+                        }
                       }
                     },
                     icon: Icons.camera_alt,
