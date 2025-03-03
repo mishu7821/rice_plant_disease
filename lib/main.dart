@@ -137,7 +137,8 @@ class MyApp extends StatelessWidget {
             return MediaQuery(
               // Optimize MediaQuery rebuilds
               data: MediaQuery.of(context).copyWith(
-                platformBrightness: MediaQuery.platformBrightnessOf(context), textScaler: TextScaler.linear(1.0),
+                platformBrightness: MediaQuery.platformBrightnessOf(context),
+                textScaler: TextScaler.linear(1.0),
               ),
               child: child,
             );
