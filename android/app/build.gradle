@@ -16,7 +16,7 @@ if (localPropertiesFile.exists()) {
 android {
     namespace "com.example.rice_disease_classifier"
     compileSdkVersion flutter.compileSdkVersion
-    ndkVersion = flutter.ndkVersion
+    // Let Android Studio manage NDK version
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
