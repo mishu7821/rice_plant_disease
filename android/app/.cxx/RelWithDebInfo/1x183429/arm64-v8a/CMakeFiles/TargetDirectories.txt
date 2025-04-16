@@ -1,0 +1,2 @@
+E:/flutter/first/rice_plant_disease/rice_plant_disease/android/app/.cxx/RelWithDebInfo/1x183429/arm64-v8a/CMakeFiles/edit_cache.dir
+E:/flutter/first/rice_plant_disease/rice_plant_disease/android/app/.cxx/RelWithDebInfo/1x183429/arm64-v8a/CMakeFiles/rebuild_cache.dir
